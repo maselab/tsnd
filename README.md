@@ -6,7 +6,9 @@ Library to handle TSND series, IMU sensors produced by ATR Japan.
 
 # NOTE
 For git clone, please use --recursive option
- git clone --recursive
+```Bash
+git clone --recursive
+```
 
 # NOTE2
 There are many lacks of functions that is not necessary on related project.
