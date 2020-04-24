@@ -1,0 +1,3 @@
+[submodule "tsnd/utils"]
+	path = tsnd/utils
+	url = https://github.com/yubori/py_commom_utilities.git
