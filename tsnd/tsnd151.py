@@ -2,6 +2,7 @@ import datetime
 import time
 import warnings
 from tsnd.utils.common_utils import *
+from tsnd.utils.thread_utils import *
 from queue import Queue, Empty
 from threading import Lock
 # require pip install pyserial
