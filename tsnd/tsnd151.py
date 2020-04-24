@@ -455,7 +455,7 @@ class TSND151(ReusableLoopThread):
                 return None
         
         flag = [0, 0, 1, 1, 0, 0, 0, # start immediately  
-                0, 0, 12, 1, 0, 0, 0] # run forever
+                0, 0, 1, 1, 0, 0, 0] # run forever
         self.send(self._CMD_CODE_MAP_['start'], flag)
         
         resp = self.wait_responce('recording_time_settings')
@@ -546,7 +546,7 @@ class TSND151(ReusableLoopThread):
         acc  = [(int.from_bytes(bytes_[i:(i+3)], "little", signed=True)) for i in range(4, 13, 3)]
         gyro  = [(int.from_bytes(bytes_[i:(i+3)], "little", signed=True)) for i in range(13, 22, 3)]
         
-        return (ms, data[0:3], data[3:6]) # ms, acc, gyro
+        return (ms, acc, gyro) # ms, acc, gyro
  
     @staticmethod
     def parse_quaternion_acc_gyro(bytes_):
