@@ -1,1 +1,1 @@
-from tsnd.TSND151 import *
+from tsnd.tsnd151 import *
