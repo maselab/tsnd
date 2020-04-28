@@ -98,6 +98,7 @@ class TSND151(ReusableLoopThread):
         ,'clear_saved_data': 0x35
         ,'get_saved_entry_num':0x36
         ,'get_mode': 0x3C
+        ,'set_auto_power_off': 0x50
         ,'set_quaternion_interval': 0x55        
     }
 
@@ -444,6 +445,19 @@ class TSND151(ReusableLoopThread):
         res = self.wait_responce('overwrite_protection')
         return res == TSND151._OVERWRITE_NG_BIT_
     
+    def set_auto_power_off(self, minutes):
+        """
+        munutes: 0:off, 1-20:minutes for auto power off
+        """
+        if minutes != 0:
+            check_range("minutes", minutes, 1, 20)
+
+        if not self.check_is_cmd_mode():
+            return False
+
+        self.send(self._CMD_CODE_MAP_['set_auto_power_off'], [minutes])
+        return self.check_success()
+
     def start_recording(self, force_restart=False, return_start_time_hms=False):
 
         if not self.check_is_cmd_mode(False):
