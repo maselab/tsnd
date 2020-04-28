@@ -10,8 +10,8 @@ For git clone, please use the following process
 git clone https://github.com/maselab/tsnd.git
 cd tsnd
 git submodule update -i
-echo "common_utils.py" > .git/modules/tsnd/utils/info/sparse-checkout
-echo "thread_utils.py" >> .git/modules/tsnd/utils/info/sparse-checkout
+echo "common_utils.py" > .git/modules/utils/info/sparse-checkout
+echo "thread_utils.py" >> .git/modules/utils/info/sparse-checkout
 (cd tsnd/utils; git config core.sparsecheckout true; git read-tree -mu HEAD)
 # git submodule update --remote # if necessary
 ```
