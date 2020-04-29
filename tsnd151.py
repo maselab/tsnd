@@ -5,6 +5,7 @@ from tsnd.utils.common_utils import *
 from tsnd.utils.thread_utils import *
 from queue import Queue, Empty
 from threading import Lock
+from contextlib import contextmanager
 # require pip install pyserial
 import serial
 
@@ -136,7 +137,20 @@ class TSND151(ReusableLoopThread):
             if q is not None:
                 while not q.empty():
                     q.get()
-            
+    @staticmethod
+    @contextmanager
+    def with_open(path_to_serial_port, timeout_sec=1, baudrate=115200):         
+        tsnd151 = TSND151()
+        tsnd151.start()
+        try:
+            try:
+                tsnd151.open(path_to_serial_port, timeout_sec, baudrate)
+                yield tsnd151
+            finally:
+                tsnd151.close()
+        finally:
+            tsnd151.stop()
+
     def open(self, path_to_serial_port, timeout_sec=1, baudrate=115200):
         try:
             self.serial_lock.acquire()
