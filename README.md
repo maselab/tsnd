@@ -56,7 +56,6 @@ tsnd151.stop()
 or using with
 ```python
 from tsnd import TSND151
-with TSND151.open(path_to_serial_port) as tsnd151:
 # path to the blt port
 # Examples
 #     mac: "/dev/tty.TSND151-AP09181536-Blue"
@@ -66,7 +65,7 @@ with TSND151.open(path_to_serial_port) as tsnd151:
 # How to make rfcommN in linux (N is int, and > 0)
 #   If mac addr of bluetooth device: AC:7A:4D:CE:1B:77,
 #   rfcomm bind N "AC:7A:4D:CE:1B:77"
-    
+with TSND151.open(path_to_serial_port) as tsnd151:
     tsnd151.stop_recording()
     tsnd151.set_time()
     q = Queue()
