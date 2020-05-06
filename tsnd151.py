@@ -139,24 +139,24 @@ class TSND151(ReusableLoopThread):
                     q.get()
     @staticmethod
     @contextmanager
-    def with_open(path_to_serial_port, timeout_sec=1, baudrate=115200):         
+    def with_open(path_to_serial_port, timeout_sec=1, baudrate=115200, wait_sec_to_establish_stability=2):
         tsnd151 = TSND151()
         tsnd151.start()
         try:
             try:
-                tsnd151.open(path_to_serial_port, timeout_sec, baudrate)
+                tsnd151.open(path_to_serial_port, timeout_sec, baudrate, wait_sec_to_establish_stability)
                 yield tsnd151
             finally:
                 tsnd151.close()
         finally:
             tsnd151.stop()
 
-    def open(self, path_to_serial_port, timeout_sec=1, baudrate=115200):
+    def open(self, path_to_serial_port, timeout_sec=1, baudrate=115200, wait_sec_to_establish_stability=2):
         try:
             self.serial_lock.acquire()
             self.__close = False
             self.serial = serial.Serial(path_to_serial_port, baudrate, timeout=timeout_sec)
-            time.sleep(0.2)
+            time.sleep(wait_sec_to_establish_stability)
         finally:
             self.serial_lock.release()
 
@@ -179,7 +179,7 @@ class TSND151(ReusableLoopThread):
         return res
 
     def read_responce(self):
-        while True: 
+        while True:
             b = self.read()
             if b == self._START_BIT_:
                 break
@@ -240,7 +240,7 @@ class TSND151(ReusableLoopThread):
         total_cmd.append(bcc)
         return total_cmd
 
-    def wait_responce(self, code_name):
+    def wait_responce(self, code_name, forever=True):
         while not self.check_should_be_stop():
             try:
                 code = self._RESPONCE_CODE_MAP_[code_name]
@@ -250,6 +250,8 @@ class TSND151(ReusableLoopThread):
                     raise NotImplementedError("Invalid responce code: {}".format(code))
             except Empty:
                 pass
+            if not forever:
+                return None
     
     def check_success(self):
         return self.wait_responce('simple') == self._OK_BIT_
@@ -538,13 +540,19 @@ class TSND151(ReusableLoopThread):
         
         return((scheduled, start_time, stop_time))
     
-    def get_mode(self):
+    def get_mode(self, no_forever_wait=False):
         """
         return: 0: USB_CMD, 1:USB_RECORDING, 2: BLT_CMD, 3:BLT_RECORDING
         """
         self.send(self._CMD_CODE_MAP_['get_mode'])
-        resp = self.wait_responce('mode')
-        return(resp[0])
+        resp = self.wait_responce('mode', not no_forever_wait)
+        if resp is None:
+            if no_forever_wait:
+                return None
+            else:
+                raise ValueError('None is invalid responce when no_forever_wait is False.')
+        else:
+            return(resp[0])
     
     def get_saved_entry_num(self):
         """
