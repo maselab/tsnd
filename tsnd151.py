@@ -1,16 +1,18 @@
 import datetime
 import time
-import warnings
 from tsnd.utils.common_utils import *
 from tsnd.utils.thread_utils import *
 from queue import Queue, Empty
 from threading import Lock
 from contextlib import contextmanager
+from logging import getLogger
 # require pip install pyserial
 import serial
 
 class TSND151(ReusableLoopThread):
     """This class is a controller for TSND151"""
+
+    _LOGGER_ = getLogger("TSND151")
     
     _START_BIT_ = b'\x9A'
     _OK_BIT_    = b'\x00'
@@ -276,7 +278,7 @@ class TSND151(ReusableLoopThread):
         mode = self.get_mode()
         is_cmd_mode = mode == 0 or mode == 2
         if cannot_send_cmd_warn and not is_cmd_mode:
-            warnings.warn('Mode is recording. Command cannot be sent.')
+            self._LOGGER_.warning('Mode is recording. Command cannot be sent.')
         
         return is_cmd_mode
             
@@ -477,11 +479,11 @@ class TSND151(ReusableLoopThread):
     def start_recording(self, force_restart=False, return_start_time_hms=False):
 
         if not self.check_is_cmd_mode(False):
-            warnings.warn('Recording already')
+            self._LOGGER_.warning('Recording already')
             if not force_restart:
                 return None
             elif not self.stop_recording():
-                warnings.warn('Failed to stop recording')
+                self._LOGGER_.warning('Failed to stop recording')
                 return None
         
         flag = [0, 0, 1, 1, 0, 0, 0, # start immediately  
@@ -503,14 +505,14 @@ class TSND151(ReusableLoopThread):
         
         if not run_forever:
             stop_time = datetime.datetime(resp[7]+2000, resp[8], resp[9], resp[10], resp[11], resp[12])
-            warnings.warn('Set run forever, but stop time has been set:{}'.format(stop_time))
+            self._LOGGER_.warning('Set run forever, but stop time has been set:{}'.format(stop_time))
 
         self.wait_responce('start_recording')        
         return start_time
         
     def stop_recording(self):
         if self.check_is_cmd_mode(False):
-            warnings.warn('Stopped already')
+            self._LOGGER_.warning('Stopped already')
             return True
 
         cmd_code = self._CMD_CODE_MAP_['stop']
