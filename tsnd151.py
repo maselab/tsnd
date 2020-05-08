@@ -141,32 +141,32 @@ class TSND151(ReusableLoopThread):
                     q.get()
     @staticmethod
     @contextmanager
-    def with_open(path_to_serial_port, timeout_sec=1, baudrate=115200, wait_sec_to_establish_stability=2):
+    def with_open(path_to_serial_port, timeout_sec=1, baudrate=115200, wait_sec_after_open=2, wait_sec_after_close=2):
         tsnd151 = TSND151()
         tsnd151.start()
         try:
             try:
-                tsnd151.open(path_to_serial_port, timeout_sec, baudrate, wait_sec_to_establish_stability)
+                tsnd151.open(path_to_serial_port, timeout_sec, baudrate, wait_sec_after_open)
                 yield tsnd151
             finally:
-                tsnd151.close()
+                tsnd151.close(wait_sec_after_close)
         finally:
             tsnd151.stop()
 
-    def open(self, path_to_serial_port, timeout_sec=1, baudrate=115200, wait_sec_to_establish_stability=2):
+    def open(self, path_to_serial_port, timeout_sec=1, baudrate=115200, wait_sec_for_stability=2):
         try:
             self.serial_lock.acquire()
             self.__close = False
             self.serial = serial.Serial(path_to_serial_port, baudrate, timeout=timeout_sec)
-            time.sleep(wait_sec_to_establish_stability)
+            time.sleep(wait_sec_for_stability)
         finally:
             self.serial_lock.release()
 
-    def close(self):
+    def close(self, wait_sec_for_stability=0.2):
         if self.serial is not None and self.serial.is_open:
             self.__close = True
             self.serial.close() 
-            time.sleep(0.2)
+            time.sleep(wait_sec_for_stability)
             try:
                 self.serial_lock.acquire()
                 self.serial = None
