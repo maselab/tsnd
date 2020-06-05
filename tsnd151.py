@@ -75,9 +75,9 @@ class TSND151(ReusableLoopThread):
         ,'start_recording': b'\x88'
         ,'stop_recording': b'\x89'
         ,'acc_gyro_data': b'\x80'
-        ,'acc_magnetism_data': b'\x81'
-        ,'acc_atmosphere_data': b'\x82'
-        ,'acc_batery_voltage_data': b'\x83'
+        ,'magnetism_data': b'\x81'
+        ,'atmosphere_data': b'\x82'
+        ,'batery_voltage_data': b'\x83'
         ,'quaternion_acc_gyro_data': b'\x8A'
         ,'acc_range': b'\xA3'
         ,'overwrite_protection': b'\xAF'
@@ -404,10 +404,10 @@ class TSND151(ReusableLoopThread):
                                0: off, on: 4-255 (means 40-2550 ms interval) 
         avg_num_for_send     : N of SMA for sending via Bluetooth. (def:1)
                                0: off (not send), enable: 1-255.
-                               e.g., If it is 2 and interval is set 5 ms, data will be sent every 10 ms.
+                               e.g., If it is 2 and interval is set 10 ms, data will be sent every 20 ms.
         avg_num_for_save     : N of SMA for saving data in device memory. (def:0)
                                0: off (not save), enable: 1-255.
-                               e.g., If it is 2 and interval is set 5 ms, data will be saved every 10 ms.
+                               e.g., If it is 2 and interval is set 10 ms, data will be saved every 20 ms.
         """
         
         if interval_in_10ms_unit != 0:
