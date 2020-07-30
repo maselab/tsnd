@@ -112,6 +112,17 @@ class TSND151:
     }
 
     def __init__(self, response_wait_timeout=5):
+        """**Use TSND151.open instead of this**
+
+        Do not use it directory.
+        Please use TSND151.open.
+
+        Parameters
+        ----------
+        response_wait_timeout: int, float
+            timeout value to wait responce
+
+        """
         self.response_wait_timeout = response_wait_timeout
 
         self.serial = None
@@ -134,8 +145,7 @@ class TSND151:
         self.sensor_to_local_time_gap_in_microsecond = 0
         self._read_response_thread = ReusableLoopThread(self._in_loop_read_response)
 
-        self.wait_sec_on_open_for_stability = 2
-        self.wait_sec_on_close_for_stability = 0.2
+        self.wait_sec_on_auto_close_for_stability = 0.2
 
     def set_response_queue(self, resp_code, q):
         """Set a queue to store responses from the sensor with specified code.
@@ -170,20 +180,21 @@ class TSND151:
         return self
 
     def __exit__(self, exception_type, exception_value, traceback):
-        self.close(self.wait_sec_on_close_for_stability)
+        self.close(self.wait_sec_on_auto_close_for_stability)
 
     @staticmethod
     def open(path_to_serial_port
              , timeout_sec=1
              , baudrate=115200
              , wait_sec_on_open_for_stability=2
-             , wait_sec_on_close_for_stability=2):
-        tsnd151 = TSND151()
+             , wait_sec_on_auto_close_for_stability=2
+             , response_wait_timeout=5):
+        tsnd151 = TSND151(response_wait_timeout=response_wait_timeout)
         try:
             tsnd151.serial_lock.acquire()
             tsnd151.__close = False
             tsnd151.serial = serial.Serial(path_to_serial_port, baudrate, timeout=timeout_sec)
-            tsnd151.wait_sec_on_close_for_stability = wait_sec_on_close_for_stability
+            tsnd151.wait_sec_on_auto_close_for_stability = wait_sec_on_auto_close_for_stability
             time.sleep(wait_sec_on_open_for_stability)
         finally:
             tsnd151.serial_lock.release()
