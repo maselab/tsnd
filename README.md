@@ -18,48 +18,28 @@ echo "thread_utils.py" >> .git/modules/utils/info/sparse-checkout
 
 # Sample code
 ```python
-from tsnd import TSND151
-from queue import Queue
-import time 
-
-path_to_serial_port="/dev/tty.TSND151-AP09181536-Blue"
-# path to the blt port
-# Examples
-#     mac: "/dev/tty.TSND151-AP09181536-Blue"
-#     win: "COM1"
-#     lin: /dev/rfcomm0
-#
-# How to make rfcommN in linux (N is int, and > 0)
-#   If mac addr of bluetooth device: AC:7A:4D:CE:1B:77,
-#   rfcomm bind N "AC:7A:4D:CE:1B:77"
-
-tsnd151 = TSND151()
+tsnd151 = TSND151().open(path_to_serial_port)
 try:
-    tsnd151.start()
-	try:
-         tsnd151.open(path_to_serial_port)
-         
-         tsnd151.stop_recording()
-         tsnd151.set_time()
-         q = Queue()
-         tsnd151.set_responce_queue('quaternion_acc_gyro_data', q)
-         tsnd151.set_quaternion_interval(interval_in_5ms_unit=1, avg_num_for_send=4, avg_num_for_save=0) # each 20 ms = 50 Hz, no save on device
-         tsnd151.start_recording(force_restart=True)
-         
-         time.sleep(3)
-         
-         for i in range(q.qsize()):
-         	print(TSND151.parse_quaternion_acc_gyro(q.get()))
-         
-         tsnd151.stop_recording()
-         
-         time.sleep(0.2) # wait for all data
-         for i in range(q.qsize()):
-         	print(TSND151.parse_quaternion_acc_gyro(q.get()))
-    finally: 
-         tsnd151.close()
+    tsnd151.stop_recording()
+    tsnd151.set_time()
+    q = Queue()
+    tsnd151.set_response_queue('quaternion_acc_gyro_data', q)
+    tsnd151.set_quaternion_interval(interval_in_5ms_unit=1, avg_num_for_send=4,
+                                    avg_num_for_save=0)  # each 20 ms = 50 Hz, no save on device
+    tsnd151.start_recording(force_restart=True)
+
+    time.sleep(3)
+
+    for i in range(q.qsize()):
+        print(TSND151.parse_quaternion_acc_gyro(q.get()))
+
+    tsnd151.stop_recording()
+
+    time.sleep(0.2)  # wait for all data
+    for i in range(q.qsize()):
+        print(TSND151.parse_quaternion_acc_gyro(q.get()))
 finally:
-    tsnd151.stop()
+    tsnd151.close()
 ```
 or using with
 ```python
@@ -77,12 +57,11 @@ path_to_serial_port="/dev/tty.TSND151-AP09181536-Blue"
 # How to make rfcommN in linux (N is int, and > 0)
 #   If mac addr of bluetooth device: AC:7A:4D:CE:1B:77,
 #   rfcomm bind N "AC:7A:4D:CE:1B:77"
-
-with TSND151.with_open(path_to_serial_port) as tsnd151:
+with TSND151.open(path_to_serial_port) as tsnd151:
     tsnd151.stop_recording()
     tsnd151.set_time()
     q = Queue()
-    tsnd151.set_responce_queue('quaternion_acc_gyro_data', q)
+    tsnd151.set_response_queue('quaternion_acc_gyro_data', q)
     tsnd151.set_quaternion_interval(interval_in_5ms_unit=1, avg_num_for_send=4, avg_num_for_save=0) # each 20 ms = 50 Hz, no save on device
     tsnd151.start_recording(force_restart=True)
 
