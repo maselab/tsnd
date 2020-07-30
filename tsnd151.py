@@ -233,7 +233,7 @@ class TSND151:
 
         cmd = self.read()
         if cmd not in self._RESPONSE_ARG_LEN_MAP_:
-            raise IOError("Invalid cmd_code is recieved: {}".format(cmd))
+            raise IOError(f"Invalid cmd_code is received: {cmd}")
         args = self.read(self._RESPONSE_ARG_LEN_MAP_[cmd])
         bcc = self.read()
 
@@ -250,7 +250,7 @@ class TSND151:
         try:
             self.serial_lock.acquire()
             if self.is_closed():
-                time.sleep(0.1)
+                time.sleep(0.01)
                 return
 
             cmd, args = self.read_response()
@@ -287,17 +287,18 @@ class TSND151:
         return total_cmd
 
     def wait_response(self, code_name, forever=True):
+        code = self._RESPONSE_CODE_MAP_[code_name]
+        if code not in self._response_queue_map:
+            raise NotImplementedError(f"Invalid response code: {code}")
+
+        q = self._response_queue_map[code]
+
         while not self._read_response_thread.check_should_be_stop():
             try:
-                code = self._RESPONSE_CODE_MAP_[code_name]
-                if code in self._response_queue_map:
-                    return self._response_queue_map[code].get(timeout=self.response_wait_timeout)
-                else:
-                    raise NotImplementedError("Invalid response code: {}".format(code))
+                return q.get(timeout=self.response_wait_timeout)
             except Empty:
-                pass
-            if not forever:
-                return None
+                if not forever:
+                    return None
 
     def check_success(self):
         return self.wait_response('simple') == self._OK_BIT_
@@ -382,7 +383,7 @@ class TSND151:
         elif g == 16:
             flag = 0x03
         else:
-            raise ValueError("Invalid acc range: (2,4,8,16) but {}".format(g))
+            raise ValueError(f"Invalid acc range: (2,4,8,16) but {g}")
 
         self.send(self._CMD_CODE_MAP_['set_acc_range'], [flag])
         resp = self.wait_response('acc_range')
@@ -403,7 +404,7 @@ class TSND151:
         elif dps == 2000:
             flag = 0x03
         else:
-            raise ValueError("Invalid gyro range: (250,500,1000,2000) but {}".format(dps))
+            raise ValueError(f"Invalid gyro range: (250,500,1000,2000) but {dps}")
 
         self.send(self._CMD_CODE_MAP_['set_gyro_range'], [flag])
         return self.check_success()
@@ -587,7 +588,7 @@ class TSND151:
 
         if not run_forever:
             stop_time = datetime.datetime(resp[7] + 2000, resp[8], resp[9], resp[10], resp[11], resp[12])
-            self._LOGGER_.warning('Set run forever, but stop time has been set:{}'.format(stop_time))
+            self._LOGGER_.warning(f'Set run forever, but stop time has been set:{stop_time}')
 
         self.wait_response('start_recording')
         return start_time
