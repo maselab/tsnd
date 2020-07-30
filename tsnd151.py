@@ -1,17 +1,15 @@
 import datetime
 import time
-from tsnd.utils.common_utils import *
-from tsnd.utils.thread_utils import *
+from tsnd.utils.common_utils import check_range
+from tsnd.utils.thread_utils import ReusableLoopThread
 from queue import Queue, Empty
 from threading import Lock
-from contextlib import contextmanager
 from logging import getLogger
-# require pip install pyserial
 import serial
 
 
 # TODO update comment style as npy style
-class TSND151(ReusableLoopThread):
+class TSND151:
     """This class is a controller for TSND151"""
 
     _LOGGER_ = getLogger("TSND151")
@@ -22,7 +20,7 @@ class TSND151(ReusableLoopThread):
     _OVERWRITE_OK_BIT_ = b'\x00'
     _OVERWRITE_NG_BIT_ = b'\x01'
 
-    _RESPONCE_ARG_LEN_MAP_ = {
+    _RESPONSE_ARG_LEN_MAP_ = {
         b'\x8F': 1
         , b'\x90': 30
         , b'\x92': 8
@@ -71,23 +69,23 @@ class TSND151(ReusableLoopThread):
         , b'\x8B': 22
         , b'\x8C': 12}
 
-    _RESPONCE_CODE_MAP_ = {
+    _RESPONSE_CODE_MAP_ = {
         'simple': b'\x8F'
-        , 'recording_time_settings': b'\x93'
-        , 'start_recording': b'\x88'
-        , 'stop_recording': b'\x89'
         , 'acc_gyro_data': b'\x80'
         , 'magnetism_data': b'\x81'
         , 'atmosphere_data': b'\x82'
         , 'battery_voltage_data': b'\x83'
+        , 'start_recording': b'\x88'
+        , 'stop_recording': b'\x89'
         , 'quaternion_acc_gyro_data': b'\x8A'
+        , 'time': b'\x92'
+        , 'recording_time_settings': b'\x93'
         , 'acc_range': b'\xA3'
         , 'overwrite_protection': b'\xAF'
-        , 'mode': b'\xBC'
         , 'saved_entry_num': b'\xB6'
         , 'saved_entry_info': b'\xB7'
         , 'saved_entry_end': b'\xB9'
-        , 'time': b'\x92'
+        , 'mode': b'\xBC'
     }
 
     _CMD_CODE_MAP_ = {
@@ -99,7 +97,7 @@ class TSND151(ReusableLoopThread):
         , 'set_acc_and_gyro_interval': 0x16
         , 'set_magnetism_interval': 0x18
         , 'set_atmosphere_interval': 0x1A
-        , 'set_batery_voltage_measurment': 0x1C
+        , 'set_battery_voltage_measurement': 0x1C
         , 'set_acc_range': 0x23
         , 'set_gyro_range': 0x25
         , 'set_overwrite_protection': 0x2E
@@ -113,68 +111,86 @@ class TSND151(ReusableLoopThread):
         , 'set_quaternion_interval': 0x55
     }
 
-    def __init__(self, responce_wait_timeout=5):
-        self.responce_wait_timeout = responce_wait_timeout
+    def __init__(self, response_wait_timeout=5):
+        self.response_wait_timeout = response_wait_timeout
 
         self.serial = None
-        self._responce_queue_map = {
-            self._RESPONCE_CODE_MAP_['simple']: Queue()
-            , self._RESPONCE_CODE_MAP_['recording_time_settings']: Queue()
-            , self._RESPONCE_CODE_MAP_['start_recording']: Queue()
-            , self._RESPONCE_CODE_MAP_['stop_recording']: Queue()
-            , self._RESPONCE_CODE_MAP_['mode']: Queue()
-            , self._RESPONCE_CODE_MAP_['overwrite_protection']: Queue()
-            , self._RESPONCE_CODE_MAP_['saved_entry_num']: Queue()
-            , self._RESPONCE_CODE_MAP_['saved_entry_info']: Queue()
-            , self._RESPONCE_CODE_MAP_['saved_entry_end']: Queue()
-            , self._RESPONCE_CODE_MAP_['acc_range']: Queue()
-            , self._RESPONCE_CODE_MAP_['time']: Queue()
+        self._response_queue_map = {
+            self._RESPONSE_CODE_MAP_['simple']: Queue()
+            , self._RESPONSE_CODE_MAP_['recording_time_settings']: Queue()
+            , self._RESPONSE_CODE_MAP_['start_recording']: Queue()
+            , self._RESPONSE_CODE_MAP_['stop_recording']: Queue()
+            , self._RESPONSE_CODE_MAP_['mode']: Queue()
+            , self._RESPONSE_CODE_MAP_['overwrite_protection']: Queue()
+            , self._RESPONSE_CODE_MAP_['saved_entry_num']: Queue()
+            , self._RESPONSE_CODE_MAP_['saved_entry_info']: Queue()
+            , self._RESPONSE_CODE_MAP_['saved_entry_end']: Queue()
+            , self._RESPONSE_CODE_MAP_['acc_range']: Queue()
+            , self._RESPONSE_CODE_MAP_['time']: Queue()
         }
 
         self.serial_lock = Lock()
         self.__close = False
         self.sensor_to_local_time_gap_in_microsecond = 0
+        self._read_response_thread = ReusableLoopThread(self._in_loop_read_response)
 
-        super().__init__(self._in_loop_read_responce)
+        self.wait_sec_on_open_for_stability = 2
+        self.wait_sec_on_close_for_stability = 0.2
 
-    def set_responce_queue(self, resp_code, q):
+    def set_response_queue(self, resp_code, q):
+        """Set a queue to store responses from the sensor with specified code.
+
+        Extended description of function.
+
+        Parameters
+        ----------
+        resp_code: string
+            Please use a key of self._RESPONSE_CODE_MAP_.
+        q: queue. or None to stop store response
+
+        Raises
+        ------
+        ValueError
+            If resp_code is not in self._RESPONSE_CODE_MAP_.
+
         """
-        resp: a key of TSND151._RESPONCE_CODE_MAP_
-        q: queue. or None to stop store responce
-        """
-        if resp_code not in TSND151._RESPONCE_CODE_MAP_:
-            raise ValueError("Invalid responce code")
+        if resp_code not in TSND151._RESPONSE_CODE_MAP_:
+            raise ValueError("Invalid response code")
 
-        self._responce_queue_map[TSND151._RESPONCE_CODE_MAP_[resp_code]] = q
+        self._response_queue_map[TSND151._RESPONSE_CODE_MAP_[resp_code]] = q
 
     def clear_all_queue(self):
-        for q in self._responce_queue_map.values():
+        """Drop all response already received."""
+        for q in self._response_queue_map.values():
             if q is not None:
                 while not q.empty():
                     q.get()
 
-    @staticmethod
-    @contextmanager
-    def with_open(path_to_serial_port, timeout_sec=1, baudrate=115200, wait_sec_after_open=2, wait_sec_after_close=2):
-        tsnd151 = TSND151()
-        tsnd151.start()
-        try:
-            try:
-                tsnd151.open(path_to_serial_port, timeout_sec, baudrate, wait_sec_after_open)
-                yield tsnd151
-            finally:
-                tsnd151.close(wait_sec_after_close)
-        finally:
-            tsnd151.stop()
+    def __enter__(self):
+        return self
 
-    def open(self, path_to_serial_port, timeout_sec=1, baudrate=115200, wait_sec_for_stability=2):
+    def __exit__(self, exception_type, exception_value, traceback):
+        self.close(self.wait_sec_on_close_for_stability)
+
+    @staticmethod
+    def open(path_to_serial_port
+             , timeout_sec=1
+             , baudrate=115200
+             , wait_sec_on_open_for_stability=2
+             , wait_sec_on_close_for_stability=2):
+        tsnd151 = TSND151()
         try:
-            self.serial_lock.acquire()
-            self.__close = False
-            self.serial = serial.Serial(path_to_serial_port, baudrate, timeout=timeout_sec)
-            time.sleep(wait_sec_for_stability)
+            tsnd151.serial_lock.acquire()
+            tsnd151.__close = False
+            tsnd151.serial = serial.Serial(path_to_serial_port, baudrate, timeout=timeout_sec)
+            tsnd151.wait_sec_on_close_for_stability = wait_sec_on_close_for_stability
+            time.sleep(wait_sec_on_open_for_stability)
         finally:
-            self.serial_lock.release()
+            tsnd151.serial_lock.release()
+
+        tsnd151._read_response_thread.start()
+
+        return tsnd151
 
     def close(self, wait_sec_for_stability=0.2):
         if not self.is_closed():
@@ -187,25 +203,27 @@ class TSND151(ReusableLoopThread):
             finally:
                 self.serial_lock.release()
 
+            self._read_response_thread.stop()
+
     def is_closed(self):
         return self.__close or self.serial is None or not self.serial.is_open
 
     def read(self, num=1):
         res = b''
-        while len(res) < num and not self.check_should_be_stop():
+        while len(res) < num and not self._read_response_thread.check_should_be_stop():
             res += self.serial.read(num - len(res))
         return res
 
-    def read_responce(self):
+    def read_response(self):
         while True:
             b = self.read()
             if b == self._START_BIT_:
                 break
 
         cmd = self.read()
-        if cmd not in self._RESPONCE_ARG_LEN_MAP_:
+        if cmd not in self._RESPONSE_ARG_LEN_MAP_:
             raise IOError("Invalid cmd_code is recieved: {}".format(cmd))
-        args = self.read(self._RESPONCE_ARG_LEN_MAP_[cmd])
+        args = self.read(self._RESPONSE_ARG_LEN_MAP_[cmd])
         bcc = self.read()
 
         check = self._START_BIT_[0] ^ cmd[0]
@@ -215,18 +233,18 @@ class TSND151(ReusableLoopThread):
         if check.to_bytes(1, 'little') != bcc:
             raise IOError("Invalid Verification Bit")
 
-        return (cmd, args)
+        return cmd, args
 
-    def _in_loop_read_responce(self):
+    def _in_loop_read_response(self):
         try:
             self.serial_lock.acquire()
             if self.is_closed():
                 time.sleep(0.1)
                 return
 
-            cmd, args = self.read_responce()
-            if cmd in self._responce_queue_map:
-                q = self._responce_queue_map[cmd]
+            cmd, args = self.read_response()
+            if cmd in self._response_queue_map:
+                q = self._response_queue_map[cmd]
                 if q is not None:
                     q.put(args)
         except serial.SerialException as e:
@@ -235,22 +253,21 @@ class TSND151(ReusableLoopThread):
         finally:
             self.serial_lock.release()
 
-    def send(self, cmd, args=[0x00]):
+    def send(self, cmd, args=(0x00,)):
         self.serial.write(self.build_cmd(cmd, args))
         self.serial.flush()
 
     @staticmethod
     def build_cmd(cmd_code, args):
         """cmd is array like object of int (of byte)"""
-        total_cmd = [TSND151._START_BIT_[0]]  # Set start bit
-        total_cmd.append(cmd_code)
+        total_cmd = [TSND151._START_BIT_[0], cmd_code]
 
-        if type(args) is list or type(args) is tuple:
+        if isinstance(args, (list, tuple)):
             total_cmd.extend(args)
         else:
             total_cmd.append(args)
 
-        # calc verif bit.
+        # calc verification bit.
         bcc = 0x00
         for c in total_cmd:
             bcc ^= c
@@ -258,21 +275,21 @@ class TSND151(ReusableLoopThread):
         total_cmd.append(bcc)
         return total_cmd
 
-    def wait_responce(self, code_name, forever=True):
-        while not self.check_should_be_stop():
+    def wait_response(self, code_name, forever=True):
+        while not self._read_response_thread.check_should_be_stop():
             try:
-                code = self._RESPONCE_CODE_MAP_[code_name]
-                if code in self._responce_queue_map:
-                    return self._responce_queue_map[code].get(timeout=self.responce_wait_timeout)
+                code = self._RESPONSE_CODE_MAP_[code_name]
+                if code in self._response_queue_map:
+                    return self._response_queue_map[code].get(timeout=self.response_wait_timeout)
                 else:
-                    raise NotImplementedError("Invalid responce code: {}".format(code))
+                    raise NotImplementedError("Invalid response code: {}".format(code))
             except Empty:
                 pass
             if not forever:
                 return None
 
     def check_success(self):
-        return self.wait_responce('simple') == self._OK_BIT_
+        return self.wait_response('simple') == self._OK_BIT_
 
     def set_time(self, dt=None):
         if dt is not None and not isinstance(dt, datetime.datetime):
@@ -296,7 +313,7 @@ class TSND151(ReusableLoopThread):
             return None
 
         self.send(self._CMD_CODE_MAP_['get_time'])
-        resp = self.wait_responce('time')
+        resp = self.wait_response('time')
         return self.parse_time(resp)
 
     def calc_sensor_time_gap_in_microsecond(self, loop_n=10):
@@ -345,20 +362,19 @@ class TSND151(ReusableLoopThread):
         if not self.check_is_cmd_mode():
             return False
 
-        flag = 0
-        if (g == 2):
+        if g == 2:
             flag = 0x00
-        elif (g == 4):
+        elif g == 4:
             flag = 0x01
-        elif (g == 8):
+        elif g == 8:
             flag = 0x02
-        elif (g == 16):
+        elif g == 16:
             flag = 0x03
         else:
             raise ValueError("Invalid acc range: (2,4,8,16) but {}".format(g))
 
         self.send(self._CMD_CODE_MAP_['set_acc_range'], [flag])
-        resp = self.wait_responce('acc_range')
+        resp = self.wait_response('acc_range')
         return resp[0] == flag
 
     def set_gyro_range(self, dps=2000):
@@ -367,14 +383,13 @@ class TSND151(ReusableLoopThread):
         if not self.check_is_cmd_mode():
             return False
 
-        flag = 0
-        if (dps == 250):
+        if dps == 250:
             flag = 0x00
-        elif (dps == 500):
+        elif dps == 500:
             flag = 0x01
-        elif (dps == 1000):
+        elif dps == 1000:
             flag = 0x02
-        elif (dps == 2000):
+        elif dps == 2000:
             flag = 0x03
         else:
             raise ValueError("Invalid gyro range: (250,500,1000,2000) but {}".format(dps))
@@ -395,7 +410,7 @@ class TSND151(ReusableLoopThread):
 
         If quaternion is enabled,
         NOTE1: +-2000 gyro range is forced.
-        NOTE2: quaternion_acc_gyro_data responce is used, no acc_gyro_data.
+        NOTE2: quaternion_acc_gyro_data response is used, no acc_gyro_data.
         """
 
         check_range("interval_in_5ms_unit", interval_in_5ms_unit, 0, 51)
@@ -479,20 +494,20 @@ class TSND151(ReusableLoopThread):
                   [interval_in_10ms_unit, avg_num_for_send, avg_num_for_save])
         return self.check_success()
 
-    def set_batery_voltage_measurment(self, send=False, save=False):
+    def set_battery_voltage_measurement(self, send=False, save=False):
         """
         send: sending via Bluetooth or not. (def:False)
         send: sending to device memory or not. (def:False)
         """
-        if type(send) is not bool:
-            ValueError("Invalid 'send' (have to be bool):" + send)
-        if type(save) is not bool:
-            ValueError("Invalid 'save' (have to be bool):" + save)
+        if not isinstance(send, bool):
+            ValueError(f"Invalid 'send' (have to be bool):{send}")
+        if not isinstance(save, bool):
+            ValueError(f"Invalid 'save' (have to be bool):{save}")
 
         if not self.check_is_cmd_mode():
             return False
 
-        self.send(self._CMD_CODE_MAP_['set_batery_voltage_measurment'], [send, save])
+        self.send(self._CMD_CODE_MAP_['set_battery_voltage_measurement'], [send, save])
         return self.check_success()
 
     def set_overwrite_protection(self, enable=False):
@@ -508,7 +523,7 @@ class TSND151(ReusableLoopThread):
         self.send(self._CMD_CODE_MAP_['set_overwrite_protection'], [enable])
         return self.check_success()
 
-    def get_overwrite_protection(self, enable=False):
+    def get_overwrite_protection(self):
         """
         return: overwrite protection for device memory is enabled or not
         """
@@ -516,12 +531,12 @@ class TSND151(ReusableLoopThread):
             return None
 
         self.send(self._CMD_CODE_MAP_['get_overwrite_protection'])
-        res = self.wait_responce('overwrite_protection')
+        res = self.wait_response('overwrite_protection')
         return res == TSND151._OVERWRITE_NG_BIT_
 
     def set_auto_power_off(self, minutes):
         """
-        munutes: 0:off, 1-20:minutes for auto power off
+        minutes: 0:off, 1-20:minutes for auto power off
         """
         if minutes != 0:
             check_range("minutes", minutes, 1, 20)
@@ -546,7 +561,7 @@ class TSND151(ReusableLoopThread):
                 0, 0, 1, 1, 0, 0, 0]  # run forever
         self.send(self._CMD_CODE_MAP_['start'], flag)
 
-        resp = self.wait_responce('recording_time_settings')
+        resp = self.wait_response('recording_time_settings')
         start_time = None
         if resp[0] == 1:
             if return_start_time_hms:
@@ -563,12 +578,12 @@ class TSND151(ReusableLoopThread):
             stop_time = datetime.datetime(resp[7] + 2000, resp[8], resp[9], resp[10], resp[11], resp[12])
             self._LOGGER_.warning('Set run forever, but stop time has been set:{}'.format(stop_time))
 
-        self.wait_responce('start_recording')
+        self.wait_response('start_recording')
         return start_time
 
     def stop_recording(self):
         if self.check_is_cmd_mode(False):
-            self._LOGGER_.warning('Stopped already')
+            self._LOGGER_.info('Stopped already')
             return True
 
         cmd_code = self._CMD_CODE_MAP_['stop']
@@ -578,7 +593,7 @@ class TSND151(ReusableLoopThread):
         if not resp:
             return False
 
-        self.wait_responce('stop_recording')
+        self.wait_response('stop_recording')
         return True
 
     def get_recording_time_settings(self, return_start_time_hms=False):
@@ -586,7 +601,7 @@ class TSND151(ReusableLoopThread):
             return None
 
         self.send(self._CMD_CODE_MAP_['get_recording_time_settings'])
-        resp = self.wait_responce('recording_time_settings')
+        resp = self.wait_response('recording_time_settings')
 
         scheduled = resp[0] == 1
         if return_start_time_hms:
@@ -603,12 +618,12 @@ class TSND151(ReusableLoopThread):
         return: 0: USB_CMD, 1:USB_RECORDING, 2: BLT_CMD, 3:BLT_RECORDING
         """
         self.send(self._CMD_CODE_MAP_['get_mode'])
-        resp = self.wait_responce('mode', not no_forever_wait)
+        resp = self.wait_response('mode', not no_forever_wait)
         if resp is None:
             if no_forever_wait:
                 return None
             else:
-                raise ValueError('None is invalid responce when no_forever_wait is False.')
+                raise ValueError('None is invalid response when no_forever_wait is False.')
         else:
             return resp[0]
 
@@ -620,7 +635,7 @@ class TSND151(ReusableLoopThread):
             return None
 
         self.send(self._CMD_CODE_MAP_['get_saved_entry_num'])
-        resp = self.wait_responce('saved_entry_num')
+        resp = self.wait_response('saved_entry_num')
         return resp[0]
 
     def get_saved_entry_start_date(self, entry_num: int, remove_hms=True):
@@ -653,7 +668,7 @@ class TSND151(ReusableLoopThread):
             return None
 
         self.send(self._CMD_CODE_MAP_['get_saved_entry_info'], [entry_num])
-        dt = self.parse_time(self.wait_responce('saved_entry_info'))
+        dt = self.parse_time(self.wait_response('saved_entry_info'))
         if remove_hms:
             dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
 
@@ -688,7 +703,7 @@ class TSND151(ReusableLoopThread):
             return False
 
         self.send(self._CMD_CODE_MAP_['get_saved_entry'], [entry_num])
-        self.wait_responce('saved_entry_end')
+        self.wait_response('saved_entry_end')
         return True
 
     def clear_saved_entry(self):
@@ -708,7 +723,7 @@ class TSND151(ReusableLoopThread):
         acc = [(int.from_bytes(bytes_[i:(i + 3)], "little", signed=True)) for i in range(4, 13, 3)]
         gyro = [(int.from_bytes(bytes_[i:(i + 3)], "little", signed=True)) for i in range(13, 22, 3)]
 
-        return (ms, acc, gyro)  # ms, acc, gyro
+        return ms, acc, gyro  # ms, acc, gyro
 
     @staticmethod
     def parse_quaternion_acc_gyro(bytes_):
@@ -747,11 +762,11 @@ class TSND151(ReusableLoopThread):
         return: (ms, quaternion, acc, gyro): acc=(ax, ay, az) in 0.1mg, gyro=(gx, gy, gz) in 0.01dps
         """
         return datetime.datetime(
-            year=2000+int.from_bytes(bytes_[0:1], "little", signed=False)
+            year=2000 + int.from_bytes(bytes_[0:1], "little", signed=False)
             , month=int.from_bytes(bytes_[1:2], "little", signed=False)
             , day=int.from_bytes(bytes_[2:3], "little", signed=False)
             , hour=int.from_bytes(bytes_[3:4], "little", signed=False)
             , minute=int.from_bytes(bytes_[4:5], "little", signed=False)
             , second=int.from_bytes(bytes_[5:6], "little", signed=False)
-            , microsecond=1000*int.from_bytes(bytes_[6:8], "little", signed=False)
+            , microsecond=1000 * int.from_bytes(bytes_[6:8], "little", signed=False)
         )
