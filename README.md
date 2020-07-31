@@ -18,7 +18,7 @@ echo "thread_utils.py" >> .git/modules/utils/info/sparse-checkout
 
 # Sample code
 ```python
-tsnd151 = TSND151().open(path_to_serial_port)
+tsnd151 = TSND151.open(path_to_serial_port)
 try:
     tsnd151.stop_recording()
     tsnd151.set_time()
