@@ -13,7 +13,7 @@ with TSND151.open(path_to_serial_port) as tsnd151:
 
     total_entry_num = tsnd151.get_saved_entry_num() 
     print(f'saved entry num: {total_entry_num}')
-    print('clear saved data? [n/Y]')
+    print('clear saved data? [y/N]')
 
     line = sys.stdin.readline()
     cmd = line.rstrip().lower()
