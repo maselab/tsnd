@@ -1,5 +1,6 @@
 import datetime
 import time
+from enum import IntEnum
 from tsnd.utils.common_utils import check_range
 from tsnd.utils.thread_utils import ReusableLoopThread
 from queue import Queue, Empty
@@ -19,6 +20,13 @@ class TSND151:
     _NG_BIT_ = b'\x01'
     _OVERWRITE_OK_BIT_ = b'\x00'
     _OVERWRITE_NG_BIT_ = b'\x01'
+
+    class OptionButtonMode(IntEnum):
+        DISABLE = 0
+        STOP = 1
+        START_STOP = 2
+        EVENT = 3
+        EVENT_WITH_BUZZER = 4
 
     _RESPONSE_ARG_LEN_MAP_ = {
         b'\x8F': 1
@@ -86,6 +94,7 @@ class TSND151:
         , 'saved_entry_info': b'\xB7'
         , 'saved_entry_end': b'\xB9'
         , 'mode': b'\xBC'
+        , 'option_button_behavior': b'\xAD'
     }
 
     _CMD_CODE_MAP_ = {
@@ -98,6 +107,8 @@ class TSND151:
         , 'set_magnetism_interval': 0x18
         , 'set_atmosphere_interval': 0x1A
         , 'set_battery_voltage_measurement': 0x1C
+        , 'set_option_button_behavior': 0x2C
+        , 'get_option_button_behavior': 0x2D
         , 'set_acc_range': 0x23
         , 'set_gyro_range': 0x25
         , 'set_overwrite_protection': 0x2E
@@ -138,6 +149,7 @@ class TSND151:
             , self._RESPONSE_CODE_MAP_['saved_entry_end']: Queue()
             , self._RESPONSE_CODE_MAP_['acc_range']: Queue()
             , self._RESPONSE_CODE_MAP_['time']: Queue()
+            , self._RESPONSE_CODE_MAP_['option_button_behavior']: Queue()
         }
 
         self.serial_lock = Lock()
@@ -521,6 +533,31 @@ class TSND151:
 
         self.send(self._CMD_CODE_MAP_['set_battery_voltage_measurement'], [send, save])
         return self.check_success()
+
+
+    def set_option_button_behavior(self, mode: OptionButtonMode):
+        """
+        mode: mode of the option button
+        """
+        try:
+            mode = TSND151.OptionButtonMode(mode)
+        except ValueError as e:
+            ValueError(f"Invalid 'mode' (have to be one of the TSND151.OptionButtonMode): {mode}")
+
+        if not self.check_is_cmd_mode():
+            return False
+
+        self.send(self._CMD_CODE_MAP_['set_option_button_behavior'], [mode])
+        return self.check_success()
+
+
+    def get_option_button_behavior(self):
+        """
+        return: one of the TSND151.OptionButtonMode
+        """
+        self.send(self._CMD_CODE_MAP_['get_option_button_behavior'])
+        res = self.wait_response('option_button_behavior')
+        return TSND151.OptionButtonMode(int.from_bytes(res, byteorder='little'))
 
     def set_overwrite_protection(self, enable=False):
         """
