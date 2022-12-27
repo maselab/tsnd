@@ -23,12 +23,13 @@ with TSND151.open(path_to_serial_port) as tsnd151:
     for i in range(total_entry_num):
         q = Queue()
         tsnd151.set_response_queue('acc_gyro_data', q)  # it should be arranged for the used recording setting
-
         start_time = tsnd151.get_saved_entry_start_date(i+1, remove_hms=False)
         start_timestamp = start_time.replace(hour=0, minute=0, second=0, microsecond=0).timestamp() 
-        get_saved_entry(i+1)
 
+        print(f'{i+1}/{total_entry_num}: start_time={start_time.strftime("%Y-%m-%d_%H-%M-%S")', end='')
+        tsnd151.get_saved_entry(i+1)
         res = np.array([conv(q.get(), start_timestamp) for i in range(q.qsize())])
 
         np.savetxt(f'{start_time.strftime("%Y-%m-%d_%H-%M-%S")}.csv', res, delimiter=',')
+        print(' [Done]')
 
