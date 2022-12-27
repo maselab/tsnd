@@ -218,8 +218,9 @@ class TSND151:
     def close(self, wait_sec_for_stability=0.2):
         if not self.is_closed():
             self.__close = True
-            self._read_response_thread.stop()
 
+            self._read_response_thread.stop()
+            time.sleep(wait_sec_for_stability)
             self.serial.close()
             time.sleep(wait_sec_for_stability)
             try:
@@ -233,23 +234,20 @@ class TSND151:
 
     def read(self, num=1):
         res = b''
-        while len(res) < num and 
-            self.serial.is_open and 
-            not self.is_closed() and 
-            not self._read_response_thread.check_should_be_stop():
-            res += self.serial.read(num - len(res))
+        while len(res) < num and not self.serial.is_open:
+               res += self.serial.read(num - len(res))
         return res
 
     def read_response(self):
-        if not self.serial.is_open and 
-            self.is_closed() and 
-            self._read_response_thread.check_should_be_stop():
-                return b'', b''
-
-        while True:
+        while not self.is_closed():
             b = self.read()
             if b == self._START_BIT_:
                 break
+
+        if (self.is_closed() or 
+            self._read_response_thread.check_should_be_stop()
+           ):
+                return b'', b''
 
         cmd = self.read()
         if cmd not in self._RESPONSE_ARG_LEN_MAP_:
