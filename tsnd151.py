@@ -234,7 +234,7 @@ class TSND151:
 
     def read(self, num=1):
         res = b''
-        while len(res) < num and not self.serial.is_open:
+        while len(res) < num and not self.is_closed():
                res += self.serial.read(num - len(res))
         return res
 
@@ -243,11 +243,6 @@ class TSND151:
             b = self.read()
             if b == self._START_BIT_:
                 break
-
-        if (self.is_closed() or 
-            self._read_response_thread.check_should_be_stop()
-           ):
-                return b'', b''
 
         cmd = self.read()
         if cmd not in self._RESPONSE_ARG_LEN_MAP_:
@@ -277,6 +272,9 @@ class TSND151:
                 if q is not None:
                     q.put(args)
         except serial.SerialException as e:
+            if not self.__close:
+                raise e
+        except IOError as e:
             if not self.__close:
                 raise e
         finally:
