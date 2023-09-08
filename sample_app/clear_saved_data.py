@@ -4,7 +4,10 @@ import numpy as np
 import time
 import sys
 
-path_to_serial_port="/dev/tty.TSND151-AP09181537"
+
+with open('serial_port.txt', 'r') as f:
+    path_to_serial_port = f.readline()[0:-1] # remove \n
+
 
 with TSND151.open(path_to_serial_port) as tsnd151:
     # init

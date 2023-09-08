@@ -2,7 +2,11 @@ from tsnd import TSND151
 from queue import Queue
 import time 
 
-path_to_serial_port="/dev/tty.TSND151-AP09181537"
+
+with open('serial_port.txt', 'r') as f:
+    path_to_serial_port = f.readline()[0:-1] # remove \n
+
+
 acc_gyro_hz=100
 
 # path to the blt port
