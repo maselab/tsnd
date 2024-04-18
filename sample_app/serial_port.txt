@@ -1,4 +1,5 @@
-COM4
+/dev/tty.TSND151-AP09181537
+#COM4
 
 # only the first line is used.
 # Examples

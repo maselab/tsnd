@@ -16,7 +16,7 @@ with TSND151.open(path_to_serial_port) as tsnd151:
 
     total_entry_num = tsnd151.get_saved_entry_num() 
     print(f'saved entry num: {total_entry_num}')
-    start_times = [start_time = tsnd151.get_saved_entry_start_date(i+1, remove_hms=False) for i in range(total_entry_num)]
+    start_times = [tsnd151.get_saved_entry_start_date(i+1, remove_hms=False) for i in range(total_entry_num)]
 
     while True:
         for i, start_time in enumerate(start_times):
