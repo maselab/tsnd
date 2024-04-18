@@ -20,10 +20,9 @@ with TSND151.open(path_to_serial_port) as tsnd151:
 
     while True:
         for i, start_time in enumerate(start_times):
-            start_time.append(start_time)
             print(f'{i:2}: {start_time}')
 
-        cmd = input("[all/end/num(e.g., 1)]: ", end='')
+        cmd = input("[all/end/num(e.g., 1)]: ")
         targets = []
 
         if cmd.lower()  == "end":

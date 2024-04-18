@@ -4,9 +4,10 @@ from enum import IntEnum
 from tsnd.utils.common_utils import check_range
 from tsnd.utils.thread_utils import ReusableLoopThread
 from queue import Queue, Empty
-from threading import Lock
+from threading import RLock, Thread
 from logging import getLogger
 import serial
+from queue import Queue
 
 
 # TODO update comment style as npy style
@@ -122,7 +123,7 @@ class TSND151:
         , 'set_quaternion_interval': 0x55
     }
 
-    def __init__(self, response_wait_timeout=5):
+    def __init__(self, response_wait_timeout=5, auto_recovery=True):
         """**Use TSND151.open instead of this**
 
         Do not use it directory.
@@ -133,8 +134,15 @@ class TSND151:
         response_wait_timeout: int, float
             timeout value to wait responce
 
+        auto_recovery: bool
+            If True, it will try to recover from serial connection error.
+
         """
+
         self.response_wait_timeout = response_wait_timeout
+        self._auto_recovery = auto_recovery
+        self._recovered = False
+        self._serial_property = {}
 
         self.serial = None
         self._response_queue_map = {
@@ -152,12 +160,21 @@ class TSND151:
             , self._RESPONSE_CODE_MAP_['option_button_behavior']: Queue()
         }
 
-        self.serial_lock = Lock()
+        self.serial_lock = RLock()
         self.__close = False
         self.sensor_to_local_time_gap_in_microsecond = 0
         self._read_response_thread = ReusableLoopThread(self._in_loop_read_response)
+        self._recording_will_stop_at = None
 
         self.wait_sec_on_auto_close_for_stability = 0.2
+
+    @property
+    def auto_recovery(self):
+        return self._auto_recovery
+
+    @property
+    def recovered(self):
+        return self._recovered
 
     def set_response_queue(self, resp_code, q):
         """Set a queue to store responses from the sensor with specified code.
@@ -194,6 +211,9 @@ class TSND151:
     def __exit__(self, exception_type, exception_value, traceback):
         self.close(self.wait_sec_on_auto_close_for_stability)
 
+    def __del__(self):
+        self.close(self.wait_sec_on_auto_close_for_stability)
+
     @staticmethod
     def open(path_to_serial_port
              , timeout_sec=1
@@ -202,40 +222,58 @@ class TSND151:
              , wait_sec_on_auto_close_for_stability=2
              , response_wait_timeout=5):
         tsnd151 = TSND151(response_wait_timeout=response_wait_timeout)
-        try:
-            tsnd151.serial_lock.acquire()
+        tsnd151._serial_property['port'] = path_to_serial_port
+        tsnd151._serial_property['baudrate'] = baudrate
+        tsnd151._serial_property['timeout'] = timeout_sec
+
+        with tsnd151.serial_lock:
             tsnd151.__close = False
-            tsnd151.serial = serial.Serial(path_to_serial_port, baudrate, timeout=timeout_sec)
+            tsnd151.serial = tsnd151._open_serial()
             tsnd151.wait_sec_on_auto_close_for_stability = wait_sec_on_auto_close_for_stability
             time.sleep(wait_sec_on_open_for_stability)
-        finally:
-            tsnd151.serial_lock.release()
 
         tsnd151._read_response_thread.start()
 
         return tsnd151
 
     def close(self, wait_sec_for_stability=0.2):
-        if not self.is_closed():
-            self.__close = True
+        self.__close = True
 
-            self._read_response_thread.stop()
-            time.sleep(wait_sec_for_stability)
-            self.serial.close()
-            time.sleep(wait_sec_for_stability)
-            try:
-                self.serial_lock.acquire()
+        with self.serial_lock:
+            if self.is_serial_ready():
+                self.serial.close()
+                del self.serial
+                time.sleep(wait_sec_for_stability)
                 self.serial = None
-            finally:
-                self.serial_lock.release()
+
+        self._read_response_thread.stop()
+
+
 
     def is_closed(self):
-        return self.__close or self.serial is None or not self.serial.is_open
+        if self.__close:
+            return True
+        elif self.auto_recovery:
+            return False
+        else:
+            return not self.is_serial_ready()
+
+    def is_serial_ready(self):
+        with self.serial_lock:
+            return self.serial is not None and self.serial.is_open
 
     def read(self, num=1):
         res = b''
+
         while len(res) < num and not self.is_closed():
-               res += self.serial.read(num - len(res))
+            with self.serial_lock:
+                if not self.is_serial_ready():
+                    raise IOError("Serial is not ready")
+                _b = self.serial.read(num - len(res)) # it return silently when timeout
+            if len(_b) == 0 and self.is_recording(): # timed out
+                raise TimeoutError()
+            else:
+                res += _b
         return res
 
     def read_response(self):
@@ -259,30 +297,104 @@ class TSND151:
 
         return cmd, args
 
-    def _in_loop_read_response(self):
-        try:
-            self.serial_lock.acquire()
-            if self.is_closed():
-                time.sleep(0.01)
-                return
 
+    def _open_serial(self, open_timeout=5):
+
+        q = Queue()
+
+        def __open_serial():
+            s = serial.Serial(port=self._serial_property['port'], 
+                              baudrate=self._serial_property['baudrate'], 
+                              timeout=self._serial_property['timeout'])
+            q.put(s)
+            time.sleep(open_timeout)
+            if not q.empty(): # timed out while open. the base thread going to other operations.
+                try:
+                    s.close()
+                except serial.SerialException as e:
+                    self._LOGGER_.warning(f'Serial can not be closed on open_serial garbage collection. cause: {e}')
+                except IOError as e:
+                    self._LOGGER_.warning(f'Serial can not be closed on open_serial garbage collection. cause: {e}')
+                finally:
+                    del s
+
+        t = Thread(target=__open_serial)
+        t.start()
+        try:
+            return q.get(timeout=open_timeout)
+        except Empty as e:
+            raise TimeoutError("Timeout occured to open serial port")
+
+    def _in_loop_read_response(self):
+
+        recovery = True
+        error = None
+        if self.is_closed():
+            time.sleep(0.01)
+            return
+
+        try:
             cmd, args = self.read_response()
             if cmd in self._response_queue_map:
                 q = self._response_queue_map[cmd]
                 if q is not None:
                     q.put(args)
+
+            recovery = False
         except serial.SerialException as e:
-            if not self.__close:
-                raise e
+            error = e
+        except TimeoutError as e:
+            error = e
         except IOError as e:
-            if not self.__close:
-                raise e
-        finally:
-            self.serial_lock.release()
+            error = e
+
+        if recovery:
+            if self.is_closed():
+                error = None  # pass
+            elif self._auto_recovery:
+                # recovery
+                error = None
+                self._recovered = True
+
+                with self.serial_lock:
+                    if self.is_serial_ready():
+                        try:
+                            self.serial.close()
+                            time.sleep(0.1)
+                        except serial.SerialException as e:
+                            self._LOGGER_.warning(f'Serial can not be closed on auto recovery. cause: {e}')
+                        except IOError as e:
+                            self._LOGGER_.warning(f'Serial can not be closed on auto recovery. cause: {e}')
+                        finally:
+                            del self.serial
+                            self.serial = None
+
+                    try:
+                        self.serial = self._open_serial()
+                    except serial.SerialException as e:
+                        error = e
+                    except TimeoutError as e:
+                        error = e
+                    except IOError as e:
+                        error = e
+
+        if error is not None:
+            if self._auto_recovery:
+                if datetime.datetime.now().microsecond % 10 == 0:
+                    self._LOGGER_.warning(f'Auto recovery will be done. {error}')
+                time.sleep(0.1)
+            else:
+                raise error
+
 
     def send(self, cmd, args=(0x00,)):
-        self.serial.write(self.build_cmd(cmd, args))
-        self.serial.flush()
+        with self.serial_lock:
+            if not self.is_serial_ready():
+                raise IOError("Serial is not ready")
+
+            self.serial.write(self.build_cmd(cmd, args))
+            self.serial.flush()
+
 
     @staticmethod
     def build_cmd(cmd_code, args):
@@ -600,6 +712,10 @@ class TSND151:
         self.send(self._CMD_CODE_MAP_['set_auto_power_off'], [minutes])
         return self.check_success()
 
+    def is_recording(self):
+        return (self._recording_will_stop_at is not None 
+                and datetime.datetime.now() < self._recording_will_stop_at)
+
     def start_recording(self, force_restart=False, return_start_time_hms=False):
 
         if not self.check_is_cmd_mode(False):
@@ -630,6 +746,11 @@ class TSND151:
         if not run_forever:
             stop_time = datetime.datetime(resp[7] + 2000, resp[8], resp[9], resp[10], resp[11], resp[12])
             self._LOGGER_.warning(f'Set run forever, but stop time has been set:{stop_time}')
+        else:
+            stop_time = datetime.datetime(9999, 1, 1, 0, 0, 0)
+
+        self._recording_will_stop_at = stop_time
+        self._recovered = False
 
         self.wait_response('start_recording')
         return start_time
@@ -647,6 +768,7 @@ class TSND151:
             return False
 
         self.wait_response('stop_recording')
+        self._recording_will_stop_at = None
         return True
 
     def get_recording_time_settings(self, return_start_time_hms=False):
