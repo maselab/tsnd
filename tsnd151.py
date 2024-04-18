@@ -7,7 +7,6 @@ from queue import Queue, Empty
 from threading import RLock, Thread
 from logging import getLogger
 import serial
-from queue import Queue
 
 
 # TODO update comment style as npy style
