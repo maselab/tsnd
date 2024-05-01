@@ -122,7 +122,7 @@ class TSND151:
         , 'set_quaternion_interval': 0x55
     }
 
-    def __init__(self, response_wait_timeout=5, auto_recovery=True):
+    def __init__(self, response_wait_timeout=5, auto_recovery=True, response_wait_auto_recovery_limit=5):
         """**Use TSND151.open instead of this**
 
         Do not use it directory.
@@ -131,7 +131,7 @@ class TSND151:
         Parameters
         ----------
         response_wait_timeout: int, float
-            timeout value to wait responce
+            timeout value to wait response
 
         auto_recovery: bool
             If True, it will try to recover from serial connection error.
@@ -142,6 +142,8 @@ class TSND151:
         self._auto_recovery = auto_recovery
         self._recovered = False
         self._serial_property = {}
+        self._recording_start_time = None
+        self._response_wait_auto_recovery_limit = response_wait_auto_recovery_limit
 
         self.serial = None
         self._response_queue_map = {
@@ -166,6 +168,10 @@ class TSND151:
         self._recording_will_stop_at = None
 
         self.wait_sec_on_auto_close_for_stability = 0.2
+
+    @property
+    def recording_start_time(self):
+        return self._recording_start_time
 
     @property
     def auto_recovery(self):
@@ -196,6 +202,12 @@ class TSND151:
             raise ValueError("Invalid response code")
 
         self._response_queue_map[TSND151._RESPONSE_CODE_MAP_[resp_code]] = q
+
+    def get_response_queue(self, resp_code):
+        if resp_code not in TSND151._RESPONSE_CODE_MAP_:
+            raise ValueError("Invalid response code")
+
+        return self._response_queue_map[TSND151._RESPONSE_CODE_MAP_[resp_code]]
 
     def clear_all_queue(self):
         """Drop all response already received."""
@@ -261,18 +273,30 @@ class TSND151:
         with self.serial_lock:
             return self.serial is not None and self.serial.is_open
 
-    def read(self, num=1):
+    def read(self, num=1, ping_check_interval = 2):
         res = b''
+
+        last_read_time = datetime.datetime.now()
 
         while len(res) < num and not self.is_closed():
             with self.serial_lock:
                 if not self.is_serial_ready():
                     raise IOError("Serial is not ready")
-                _b = self.serial.read(num - len(res)) # it return silently when timeout
-            if len(_b) == 0 and self.is_recording(): # timed out
-                raise TimeoutError()
+                _b = self.serial.read(num - len(res)) # it return silently when timed out
+
+            if len(_b) == 0:
+                if self.is_recording():
+                    if (datetime.datetime.now() - last_read_time).total_seconds() > self._serial_property['timeout']:
+                        raise TimeoutError()
+                elif (datetime.datetime.now() - last_read_time).total_seconds() > ping_check_interval:
+                    self._ping()
             else:
+                last_read_time = datetime.datetime.now()
                 res += _b
+
+        if self.is_closed():
+            raise IOError("Serial is closed")
+
         return res
 
     def read_response(self):
@@ -283,7 +307,7 @@ class TSND151:
 
         cmd = self.read()
         if cmd not in self._RESPONSE_ARG_LEN_MAP_:
-            raise IOError(f"Invalid cmd_code is received: {cmd}")
+            raise ValueError(f"Invalid cmd_code is received: {cmd}")
         args = self.read(self._RESPONSE_ARG_LEN_MAP_[cmd])
         bcc = self.read()
 
@@ -304,7 +328,7 @@ class TSND151:
         def __open_serial():
             s = serial.Serial(port=self._serial_property['port'], 
                               baudrate=self._serial_property['baudrate'], 
-                              timeout=self._serial_property['timeout'])
+                              timeout=0.01) # 10 msec, it is just a check interval.
             q.put(s)
             time.sleep(open_timeout)
             if not q.empty(): # timed out while open. the base thread going to other operations.
@@ -326,12 +350,11 @@ class TSND151:
 
     def _in_loop_read_response(self):
 
-        recovery = True
-        error = None
         if self.is_closed():
             time.sleep(0.01)
             return
 
+        error = None
         try:
             cmd, args = self.read_response()
             if cmd in self._response_queue_map:
@@ -339,51 +362,58 @@ class TSND151:
                 if q is not None:
                     q.put(args)
 
-            recovery = False
         except serial.SerialException as e:
             error = e
         except TimeoutError as e:
             error = e
         except IOError as e:
             error = e
+        except ValueError as e:
+            self._LOGGER_.warning(e)
+            error = None
 
-        if recovery:
-            if self.is_closed():
-                error = None  # pass
-            elif self._auto_recovery:
-                # recovery
-                error = None
-                self._recovered = True
+        if error is not None and not self.is_closed() and self.auto_recovery:
+            error = self.recover_connection(error)
 
-                with self.serial_lock:
-                    if self.is_serial_ready():
-                        try:
-                            self.serial.close()
-                            time.sleep(0.1)
-                        except serial.SerialException as e:
-                            self._LOGGER_.warning(f'Serial can not be closed on auto recovery. cause: {e}')
-                        except IOError as e:
-                            self._LOGGER_.warning(f'Serial can not be closed on auto recovery. cause: {e}')
-                        finally:
-                            del self.serial
-                            self.serial = None
-
-                    try:
-                        self.serial = self._open_serial()
-                    except serial.SerialException as e:
-                        error = e
-                    except TimeoutError as e:
-                        error = e
-                    except IOError as e:
-                        error = e
-
-        if error is not None:
-            if self._auto_recovery:
+        if error is not None and not self.is_closed():
+            if self.auto_recovery:
                 if datetime.datetime.now().microsecond % 10 == 0:
                     self._LOGGER_.warning(f'Auto recovery will be done. {error}')
                 time.sleep(0.1)
             else:
                 raise error
+
+    def recover_connection(self, error):
+        if self.is_closed():
+            error = None  # pass
+        elif self.auto_recovery:
+                # recovery
+            error = None
+            self._recovered = True
+
+            with self.serial_lock:
+                if self.is_serial_ready():
+                    try:
+                        self.serial.close()
+                        time.sleep(0.1)
+                    except serial.SerialException as e:
+                        self._LOGGER_.warning(f'Serial can not be closed on auto recovery. cause: {e}')
+                    except IOError as e:
+                        self._LOGGER_.warning(f'Serial can not be closed on auto recovery. cause: {e}')
+                    finally:
+                        del self.serial
+                        self.serial = None
+
+                try:
+                    self.serial = self._open_serial()
+                except serial.SerialException as e:
+                    error = e
+                except TimeoutError as e:
+                    error = e
+                except IOError as e:
+                    error = e
+        
+        return error
 
 
     def send(self, cmd, args=(0x00,)):
@@ -413,19 +443,42 @@ class TSND151:
         total_cmd.append(bcc)
         return total_cmd
 
-    def wait_response(self, code_name, forever=True):
+    def wait_response(self, code_name, timeout_sec=None):
+        """
+        Waits for a response with the specified code from the response queue.
+
+        Args:
+            code_name (str): The name of the response code to wait for.
+            timeout_sec (float, optional): The maximum time to wait for the response, in seconds.
+                If None, the default response_wait_timeout is used.
+
+        Returns:
+            object: The response object from the queue.
+
+        Raises:
+            NotImplementedError: If an invalid response code is provided.
+            TimeoutError: If the timeout period is exceeded while waiting for the response.
+            IOError: If the connection for TSND151 is lost.
+
+        """
+
+        if timeout_sec is None:
+            timeout_sec = self.response_wait_timeout
+
         code = self._RESPONSE_CODE_MAP_[code_name]
         if code not in self._response_queue_map:
             raise NotImplementedError(f"Invalid response code: {code}")
 
         q = self._response_queue_map[code]
 
+        wait_start = datetime.datetime.now()
         while not self._read_response_thread.check_should_be_stop():
             try:
-                return q.get(timeout=self.response_wait_timeout)
+                return q.get(timeout= min(timeout_sec, 0.1))  # 0.1 is a check interval
             except Empty:
-                if not forever:
-                    return None
+                is_timed_out = (datetime.datetime.now() - wait_start).total_seconds() > timeout_sec
+                if is_timed_out:
+                    raise TimeoutError(f'Timeout occurred while waiting response for {code_name}')
 
     def check_success(self):
         return self.wait_response('simple') == self._OK_BIT_
@@ -750,6 +803,7 @@ class TSND151:
 
         self._recording_will_stop_at = stop_time
         self._recovered = False
+        self._recording_start_time = start_time
 
         self.wait_response('start_recording')
         return start_time
@@ -768,6 +822,7 @@ class TSND151:
 
         self.wait_response('stop_recording')
         self._recording_will_stop_at = None
+        self._recording_start_time = None
         return True
 
     def get_recording_time_settings(self, return_start_time_hms=False):
@@ -787,19 +842,20 @@ class TSND151:
 
         return scheduled, start_time, stop_time
 
-    def get_mode(self, no_forever_wait=False):
+    def get_mode(self):
+        return self._get_mode()
+    
+    def _ping(self):
+        self._get_mode(0.2)
+
+    def _get_mode(self, timeout_sec=None):
         """
         return: 0: USB_CMD, 1:USB_RECORDING, 2: BLT_CMD, 3:BLT_RECORDING
         """
         self.send(self._CMD_CODE_MAP_['get_mode'])
-        resp = self.wait_response('mode', not no_forever_wait)
-        if resp is None:
-            if no_forever_wait:
-                return None
-            else:
-                raise ValueError('None is invalid response when no_forever_wait is False.')
-        else:
-            return resp[0]
+        resp = self.wait_response('mode', timeout_sec)
+
+        return resp[0]
 
     def get_saved_entry_num(self):
         """
@@ -848,7 +904,7 @@ class TSND151:
 
         return dt
 
-    def get_saved_entry(self, entry_num: int):
+    def get_saved_entry(self, entry_num: int, timeout_sec = 600):
         """Start saved entry download.
 
         It start a download of the specified saved entry,
@@ -861,6 +917,10 @@ class TSND151:
         entry_num: int
            target entry number
            1 <= entry_num <= 80
+
+        timeout_sec: int, float
+            timeout value to wait end of the entry
+            default is 600 sec
 
         Returns
         -------
@@ -877,7 +937,7 @@ class TSND151:
             return False
 
         self.send(self._CMD_CODE_MAP_['get_saved_entry'], [entry_num])
-        self.wait_response('saved_entry_end')
+        self.wait_response('saved_entry_end', timeout_sec)
         return True
 
     def clear_saved_entry(self):
